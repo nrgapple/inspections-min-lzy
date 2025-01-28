@@ -2,7 +2,7 @@
 <html>
   <head>
     <meta charset="UTF-8" />
-    <title>Minimal Out-of-the-Box Inspection App</title>
+    <title>Inspection App (GitHub Issues + Imgur) with Sign-Up</title>
     <style>
       body {
         font-family: sans-serif;
@@ -21,23 +21,46 @@
         margin: 5px 0;
         border: 1px solid #ccc;
       }
+      .section {
+        border: 1px solid #ccc;
+        padding: 1rem;
+        margin-bottom: 1rem;
+      }
     </style>
   </head>
   <body>
-    <h1>Inspection App (GitHub Issues + Imgur)</h1>
+    <h1>Inspection App (GitHub Issues + Imgur) with Sign-Up</h1>
 
-    <!-- Super naive "Auth" -->
-    <div id="authDiv">
-      <p>Enter Username/Password to Log In:</p>
-      <input type="text" id="username" placeholder="Username" />
-      <input type="password" id="password" placeholder="Password" />
+    <!-- Section: Sign Up -->
+    <div class="section">
+      <h2>Sign Up</h2>
+      <label>Username: <input type="text" id="signupUsername" /></label><br />
+      <label>Password: <input type="password" id="signupPassword" /></label
+      ><br />
+      <label
+        >Role:
+        <select id="signupRole">
+          <option value="lender">Lender</option>
+          <option value="inspector">Inspector</option>
+        </select> </label
+      ><br /><br />
+      <button id="signupBtn">Sign Up</button>
+      <p id="signupStatus"></p>
+    </div>
+
+    <!-- Section: Login / Logout -->
+    <div class="section">
+      <h2>Login</h2>
+      <label>Username: <input type="text" id="loginUsername" /></label><br />
+      <label>Password: <input type="password" id="loginPassword" /></label
+      ><br /><br />
       <button id="loginBtn">Login</button>
       <button id="logoutBtn" class="hidden">Logout</button>
       <p id="authStatus"></p>
     </div>
 
     <!-- Lender Section -->
-    <div id="lenderDiv" class="hidden">
+    <div id="lenderDiv" class="section hidden">
       <h2>Lender Dashboard</h2>
       <label>Inspection Title: <input type="text" id="titleInput" /></label
       ><br /><br />
@@ -54,45 +77,34 @@
     </div>
 
     <!-- Inspector Section -->
-    <div id="inspectorDiv" class="hidden">
+    <div id="inspectorDiv" class="section hidden">
       <h2>Inspector Dashboard</h2>
       <ul id="inspectorList"></ul>
     </div>
 
     <script>
-      /*** 1) Minimal "user database" in code ***/
-      const users = [
-        {
-          username: "lender1",
-          password: "pass1",
-          role: "lender",
-          userId: "lender1",
-        },
-        {
-          username: "inspector1",
-          password: "pass2",
-          role: "inspector",
-          userId: "inspector1",
-        },
-      ];
-      /*
-        userId = the "unique ID" we'll store in the GitHub Issue body so we know who it belongs to.
-        For a real app, you'd have real auth. This is a silly example for minimal code sake.
-      */
+      /*** --- 1) Constants: repo, token, Imgur, etc. --- ***/
+      const GH_REPO_OWNER = "YOUR_GITHUB_USERNAME";
+      const GH_REPO_NAME = "YOUR_REPO_NAME";
+      const GH_PAT = "YOUR_GITHUB_PAT"; // must have 'repo' scope
+      const USER_ISSUE_NUMBER = 1; // The issue # you created for storing user data
+      const IMGUR_CLIENT_ID = "YOUR_IMGUR_CLIENT_ID";
 
-      /*** 2) Our "logged in" user (null if none) ***/
+      /*** We'll store user data from GitHub Issue #1 in a global array once we fetch it. ***/
+      let userDatabase = []; // array of { username, password, role, userId }
+
+      /*** Logged-in user object, or null if not logged in. ***/
       let currentUser = null;
 
-      /*** 3) GitHub & Imgur config (WARNING: exposing tokens in client!) ***/
-      const GH_REPO_OWNER = "nrgapple";
-      const GH_REPO_NAME = "inspections-min-lzy";
-      const GH_PAT =
-        "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"; // personal access token with repo scope
-      const IMGUR_CLIENT_ID = "54d212003c88f26"; // from Imgur application
+      /*** 2) DOM Elements ***/
+      const signupUsernameEl = document.getElementById("signupUsername");
+      const signupPasswordEl = document.getElementById("signupPassword");
+      const signupRoleEl = document.getElementById("signupRole");
+      const signupBtn = document.getElementById("signupBtn");
+      const signupStatus = document.getElementById("signupStatus");
 
-      /*** 4) Dom elements ***/
-      const usernameEl = document.getElementById("username");
-      const passwordEl = document.getElementById("password");
+      const loginUsernameEl = document.getElementById("loginUsername");
+      const loginPasswordEl = document.getElementById("loginPassword");
       const loginBtn = document.getElementById("loginBtn");
       const logoutBtn = document.getElementById("logoutBtn");
       const authStatus = document.getElementById("authStatus");
@@ -100,18 +112,60 @@
       const lenderDiv = document.getElementById("lenderDiv");
       const titleInput = document.getElementById("titleInput");
       const itemsInput = document.getElementById("itemsInput");
-      const inspectorUsername = document.getElementById("inspectorUsername");
+      const inspectorUsernameEl = document.getElementById("inspectorUsername");
       const createBtn = document.getElementById("createBtn");
       const lenderList = document.getElementById("lenderList");
 
       const inspectorDiv = document.getElementById("inspectorDiv");
       const inspectorList = document.getElementById("inspectorList");
 
-      /*** 5) "Login" logic ***/
-      loginBtn.onclick = () => {
-        const uname = usernameEl.value.trim();
-        const pword = passwordEl.value.trim();
-        const u = users.find(
+      /*** 3) On page load, fetch the Users Issue so we have the latest user array. ***/
+      window.onload = async function () {
+        await loadUsersFromGitHub();
+      };
+
+      /*** 4) Sign-Up Flow ***/
+      signupBtn.onclick = async function () {
+        const uname = signupUsernameEl.value.trim();
+        const pword = signupPasswordEl.value.trim();
+        const role = signupRoleEl.value.trim();
+        if (!uname || !pword) {
+          signupStatus.textContent = "Please enter username + password.";
+          return;
+        }
+
+        // 4a) Check if username already exists
+        const existing = userDatabase.find((u) => u.username === uname);
+        if (existing) {
+          signupStatus.textContent = "That username is already taken.";
+          return;
+        }
+
+        // 4b) Create new user object
+        // We'll just use the username as userId for simplicity. For uniqueness, you might do something else.
+        const newUser = {
+          username: uname,
+          password: pword,
+          role: role,
+          userId: uname,
+        };
+
+        // 4c) Add to our userDatabase array, then push the updated array to GitHub Issue
+        userDatabase.push(newUser);
+        const success = await updateUsersOnGitHub(userDatabase);
+        if (success) {
+          signupStatus.textContent = "Sign-up successful. You can now log in.";
+        } else {
+          signupStatus.textContent =
+            "Failed to update user database on GitHub.";
+        }
+      };
+
+      /*** 5) Login Flow ***/
+      loginBtn.onclick = function () {
+        const uname = loginUsernameEl.value.trim();
+        const pword = loginPasswordEl.value.trim();
+        const u = userDatabase.find(
           (x) => x.username === uname && x.password === pword
         );
         if (!u) {
@@ -121,8 +175,8 @@
         currentUser = u;
         authStatus.textContent = `Logged in as ${u.username} (role: ${u.role})`;
         loginBtn.disabled = true;
-        usernameEl.disabled = true;
-        passwordEl.disabled = true;
+        loginUsernameEl.disabled = true;
+        loginPasswordEl.disabled = true;
         logoutBtn.classList.remove("hidden");
         if (u.role === "lender") {
           lenderDiv.classList.remove("hidden");
@@ -135,22 +189,22 @@
         }
       };
 
-      logoutBtn.onclick = () => {
+      logoutBtn.onclick = function () {
         currentUser = null;
         authStatus.textContent = "Logged out";
         loginBtn.disabled = false;
-        usernameEl.disabled = false;
-        passwordEl.disabled = false;
-        usernameEl.value = "";
-        passwordEl.value = "";
+        loginUsernameEl.disabled = false;
+        loginPasswordEl.disabled = false;
+        loginUsernameEl.value = "";
+        loginPasswordEl.value = "";
         logoutBtn.classList.add("hidden");
         lenderDiv.classList.add("hidden");
         inspectorDiv.classList.add("hidden");
       };
 
-      /*** 6) Lender create an inspection => create GitHub Issue ***/
+      /*** 6) Lender creates an inspection => create GitHub Issue ***/
       createBtn.onclick = async () => {
-        if (!currentUser) return;
+        if (!currentUser || currentUser.role !== "lender") return;
         const title = titleInput.value.trim();
         if (!title) {
           alert("Need a title");
@@ -164,10 +218,9 @@
           return;
         }
         // find inspector user
-        const insU = users.find(
-          (x) =>
-            x.username === inspectorUsername.value.trim() &&
-            x.role === "inspector"
+        const inspectorName = inspectorUsernameEl.value.trim();
+        const insU = userDatabase.find(
+          (x) => x.username === inspectorName && x.role === "inspector"
         );
         if (!insU) {
           alert("Inspector username not found");
@@ -208,9 +261,8 @@
 
       /*** 7) Lender loads their inspections => list GitHub issues, filter by lenderId in body. ***/
       async function loadLenderInspections() {
-        if (!currentUser) return;
+        if (!currentUser || currentUser.role !== "lender") return;
         lenderList.innerHTML = "Loading...";
-        // List all issues
         const ghUrl = `https://api.github.com/repos/${GH_REPO_OWNER}/${GH_REPO_NAME}/issues?state=all&per_page=100`;
         const resp = await fetch(ghUrl, {
           headers: { Authorization: `token ${GH_PAT}` },
@@ -223,21 +275,19 @@
         }
         lenderList.innerHTML = "";
         issues.forEach((issue) => {
-          // parse the body
           let bodyData;
           try {
             bodyData = JSON.parse(issue.body);
           } catch (e) {
             return;
           }
-          // filter for lenderId
           if (bodyData.lenderId === currentUser.userId) {
             const li = document.createElement("li");
             li.innerHTML = `
-              <strong>${issue.title}</strong> [#${issue.number}] - Status: ${bodyData.status}<br/>
-              Inspector: ${bodyData.inspectorId}<br/>
-              <button onclick="viewInspection(${issue.number})">View</button>
-            `;
+        <strong>${issue.title}</strong> [#${issue.number}] - Status: ${bodyData.status}<br/>
+        Inspector: ${bodyData.inspectorId}<br/>
+        <button onclick="viewInspection(${issue.number})">View</button>
+      `;
             lenderList.appendChild(li);
           }
         });
@@ -245,7 +295,7 @@
 
       /*** 8) Inspector loads assigned => filter by inspectorId in body. ***/
       async function loadInspectorInspections() {
-        if (!currentUser) return;
+        if (!currentUser || currentUser.role !== "inspector") return;
         inspectorList.innerHTML = "Loading...";
         const ghUrl = `https://api.github.com/repos/${GH_REPO_OWNER}/${GH_REPO_NAME}/issues?state=all&per_page=100`;
         const resp = await fetch(ghUrl, {
@@ -267,9 +317,9 @@
           if (bodyData.inspectorId === currentUser.userId) {
             const li = document.createElement("li");
             li.innerHTML = `
-              <strong>${issue.title}</strong> [#${issue.number}] - Status: ${bodyData.status}<br/>
-              <button onclick="completeInspection(${issue.number})">Complete / Update</button>
-            `;
+        <strong>${issue.title}</strong> [#${issue.number}] - Status: ${bodyData.status}<br/>
+        <button onclick="completeInspection(${issue.number})">Complete/Update</button>
+      `;
             inspectorList.appendChild(li);
           }
         });
@@ -297,10 +347,13 @@
 
       /*** 10) Inspector "Complete / Update" -> set new percentages, optional photo. ***/
       window.completeInspection = async function (issueNumber) {
+        if (!currentUser || currentUser.role !== "inspector") return;
+
         // 1) fetch current issue data
         const issueData = await getIssueData(issueNumber);
         if (!issueData) return;
         const { title, bodyData } = issueData;
+
         // prompt new percentages
         const arrStr = prompt(
           "Enter new percentages (JSON array) or blank to skip",
@@ -318,6 +371,7 @@
             alert("Invalid JSON array");
           }
         }
+
         // if all 100 => status = COMPLETED
         const allComplete = bodyData.lineItems.every(
           (i) => i.percentage >= 100
@@ -340,7 +394,7 @@
         loadInspectorInspections();
       };
 
-      /*** helper: getIssueData ***/
+      /*** Helper: getIssueData ***/
       async function getIssueData(issueNumber) {
         const ghUrl = `https://api.github.com/repos/${GH_REPO_OWNER}/${GH_REPO_NAME}/issues/${issueNumber}`;
         const resp = await fetch(ghUrl, {
@@ -362,7 +416,7 @@
         return { title: issue.title, bodyData };
       }
 
-      /*** helper: updateIssue ***/
+      /*** Helper: updateIssue ***/
       async function updateIssue(issueNumber, newTitle, newBodyData) {
         const ghUrl = `https://api.github.com/repos/${GH_REPO_OWNER}/${GH_REPO_NAME}/issues/${issueNumber}`;
         const resp = await fetch(ghUrl, {
@@ -386,7 +440,7 @@
         return data;
       }
 
-      /*** helper: pickPhoto ***/
+      /*** Helper: pickPhoto ***/
       function pickPhoto() {
         return new Promise((resolve) => {
           const input = document.createElement("input");
@@ -403,7 +457,7 @@
         });
       }
 
-      /*** helper: uploadToImgur ***/
+      /*** Helper: uploadToImgur ***/
       async function uploadToImgur(file) {
         const formData = new FormData();
         formData.append("image", file);
@@ -421,6 +475,64 @@
           console.error(json);
           return null;
         }
+      }
+
+      /*** 11) The main user-database logic: load and update the "Users" Issue ***/
+
+      /** loadUsersFromGitHub:
+    - GET the single issue (#USER_ISSUE_NUMBER),
+    - parse its body JSON to get the array of users,
+    - store it in the global userDatabase array.
+*/
+      async function loadUsersFromGitHub() {
+        const ghUrl = `https://api.github.com/repos/${GH_REPO_OWNER}/${GH_REPO_NAME}/issues/${USER_ISSUE_NUMBER}`;
+        const resp = await fetch(ghUrl, {
+          headers: { Authorization: `token ${GH_PAT}` },
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          console.error("Failed to fetch users issue:", data);
+          return;
+        }
+        try {
+          const obj = JSON.parse(data.body);
+          if (Array.isArray(obj.users)) {
+            userDatabase = obj.users;
+            console.log("Loaded userDatabase from GitHub:", userDatabase);
+          } else {
+            console.warn(
+              "No 'users' array found in issue body. Using empty array."
+            );
+          }
+        } catch (e) {
+          console.error("Error parsing users issue body:", e);
+        }
+      }
+
+      /** updateUsersOnGitHub:
+    - we have an updated userDatabase array,
+    - we patch the same #USER_ISSUE_NUMBER with the new array in the body.
+*/
+      async function updateUsersOnGitHub(newArray) {
+        const ghUrl = `https://api.github.com/repos/${GH_REPO_OWNER}/${GH_REPO_NAME}/issues/${USER_ISSUE_NUMBER}`;
+        const bodyObj = { users: newArray };
+        const resp = await fetch(ghUrl, {
+          method: "PATCH",
+          headers: {
+            Authorization: `token ${GH_PAT}`,
+            Accept: "application/vnd.github.v3+json",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            body: JSON.stringify(bodyObj),
+          }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          console.error("Failed to update users issue:", data);
+          return false;
+        }
+        return true;
       }
     </script>
   </body>
